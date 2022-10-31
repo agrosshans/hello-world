@@ -1,0 +1,65 @@
+---
+
+# journalctl --rotate
+# journalctl -k --vacuum-time=1s
+# iptables -A INPUT -i ens160 -m limit --limit 1/min -p tcp -m tcp --dport 22 -m state --state NEW,ESTABLISHED -j LOG --log-prefix '++ SSH traffic ++'
+
+- name: Parse journalctl to get iptables filtering
+
+  hosts: fedora35-1.lanathome.com
+  remote_user: ansible
+  become: yes
+  become_method: sudo
+  gather_facts: true
+
+  vars:
+    regexp: 'SRC=\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+    src_ip: ''
+  
+  tasks:
+  - name: shell
+    ansible.builtin.shell:
+      cmd: journalctl -k --since="2022-10-31 20:15:00"
+    register: asdf
+
+  - debug:
+      var: asdf.stdout_lines
+
+  # "Oct 31 19:21:28 fedora35-1.lanathome.com kernel: ++ SSH traffic ++IN=ens160 OUT= MAC=00:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx 
+  # SRC=10.10.1.139 DST=10.10.1.113 LEN=52 TOS=0x00 PREC=0x20 TTL=64 ID=0 DF PROTO=TCP SPT=58094 DPT=22 WINDOW=2046 RES=0x00 ACK URGP=0 ",
+
+  - name: set_fact
+    set_fact:
+      src_ip: "{{ item | regex_search(regexp) | regex_replace('SRC=', '') }}"
+    loop: "{{ asdf.stdout_lines }}"
+    register: foo_result
+
+  - name: make a list of ip
+    set_fact: foo="{{ foo_result.results | map(attribute='ansible_facts.src_ip') | unique | select | list }}"
+
+
+  - debug:
+      var=foo
+
+  - name: make a list of dns from ip
+    set_fact:
+      src_dns: "{{ lookup('dig', item, '@xx.xx.xx.xx', 'qtype=PTR') }}"
+    with_items:
+      - "{{ foo }}"
+    register: dns_results
+
+  - debug: 
+      msg: "{{ dns_results.results | type_debug }}" # "msg": "list"
+
+  - debug: 
+      var: dns_results.results
+
+  - name: append to src_ip.output file
+    ansible.builtin.lineinfile:
+      path: /xxx/xxx/ansible_run/output/src_ip.output
+      create: yes
+      state: present
+      line: "{{ item.ansible_facts.src_dns}}"
+    loop: "{{ dns_results.results }}"
+    become: false
+    delegate_to: localhost
